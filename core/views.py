@@ -5,13 +5,13 @@ INTENTIONALLY-VULNERABLE TEST FIXTURE. Each endpoint below contains a
 deliberately planted vulnerability for use by a defensive security scanner.
 Do NOT deploy this code.
 """
-import pickle
-
 import requests
 import yaml
 from django.db import connection
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+
+from core.ingest import deserialize
 
 
 @csrf_exempt
@@ -32,34 +32,23 @@ def config(request):
     return JsonResponse({"loaded": str(data)})
 
 
-def _ingest(content):
-    """
-    Helper that deserializes raw bytes into a Python object.
-
-    The bytes originate from the attacker-controlled URL fetched in proxy(),
-    so this is the dangerous sink of the chain.
-    """
-    # CHAIN step 2/2 (insecure deserialization -> RCE)
-    obj = pickle.loads(content)
-    return obj
-
-
 @csrf_exempt
 def proxy(request):
     """
-    (B) CHAIN endpoint: GET /api/proxy?url=
+    (B) CHAIN endpoint: GET /api/proxy?url=  (cross-file chain)
 
-    Step 1 fetches an attacker-supplied URL (SSRF). The fetched response body
-    then flows directly into pickle.loads() in _ingest() (step 2), giving the
-    attacker control over the deserialized bytes and hence remote code exec.
+    Step 1 fetches an attacker-supplied URL (SSRF) here in core/views.py. The
+    fetched response body then flows into core/ingest.deserialize() (step 2,
+    pickle.loads) in a separate module, giving the attacker control over the
+    deserialized bytes and hence remote code execution.
     """
     url = request.GET.get("url", "")
 
-    # CHAIN step 1/2 (SSRF)
+    # CHAIN step 1/2 (SSRF) — source in core/views.py
     r = requests.get(url)
 
-    # The bytes fetched above flow straight into the deserialization sink.
-    obj = _ingest(r.content)
+    # The bytes fetched above flow into the deserialization sink in core/ingest.py.
+    obj = deserialize(r.content)
 
     return JsonResponse({"deserialized": str(obj)})
 
